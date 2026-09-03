@@ -53,6 +53,30 @@ local DEATH_EFFECT_STYLES = {
 }
 local DEFAULT_DEATH_STYLE = { color = { 0.7, 0.7, 0.7 }, duration = 0.5, burst = 1.6 }
 
+-- Dish temperature: a single player-adjustable dial (0-100, "cold" to
+-- "hot"), default parked in the middle of the comfort band so it's inert
+-- until someone actually reaches for it. See cell.lua's TEMP_* constants
+-- for the comfort band and how heat_resistance/cold_resistance blunt it.
+World.MIN_TEMPERATURE = 0
+World.MAX_TEMPERATURE = 100
+local DEFAULT_TEMPERATURE = 50
+
+-- Water viscosity: 0 (thin/runny) .. 1 (thick/syrupy), a second player-
+-- adjustable dial. Drives two things: how much drag the fluid field itself
+-- has (src/fluid.lua's decay, set from main.lua) and how much it slows a
+-- cell's own swimming (cell.lua's VISCOSITY_SWIM_PENALTY) -- thick water
+-- fights everyone equally, whether or not they're bracing against a current.
+World.MIN_VISCOSITY = 0
+World.MAX_VISCOSITY = 1
+local DEFAULT_VISCOSITY = 0.5
+
+-- Food abundance: a multiplier on how often every food tier's spawn timer
+-- fires (higher = more often), caps left untouched -- a third player-
+-- adjustable dial, same shape as temperature/viscosity.
+World.MIN_FOOD_RATE = 0.2
+World.MAX_FOOD_RATE = 3.0
+local DEFAULT_FOOD_RATE = 1.0
+
 function World.new(width, height)
     local self = setmetatable({}, World)
     self.width, self.height = width, height
@@ -65,6 +89,9 @@ function World.new(width, height)
     self.megaFoodTimer = MEGA_FOOD_SPAWN_INTERVAL
     self.time = 0
     self.stats = { population = 0, predators = 0, herbivores = 0, avg = {} }
+    self.temperature = DEFAULT_TEMPERATURE
+    self.viscosity = DEFAULT_VISCOSITY
+    self.foodRate = DEFAULT_FOOD_RATE
 
     self.hotspots = {}
     for _ = 1, HOTSPOT_COUNT do
@@ -114,6 +141,18 @@ function World:constrain(entity)
     if entity.x > self.width - margin then entity.x = self.width - margin end
     if entity.y < margin then entity.y = margin end
     if entity.y > self.height - margin then entity.y = self.height - margin end
+end
+
+function World:setTemperature(t)
+    self.temperature = math.max(World.MIN_TEMPERATURE, math.min(World.MAX_TEMPERATURE, t))
+end
+
+function World:setViscosity(v)
+    self.viscosity = math.max(World.MIN_VISCOSITY, math.min(World.MAX_VISCOSITY, v))
+end
+
+function World:setFoodRate(r)
+    self.foodRate = math.max(World.MIN_FOOD_RATE, math.min(World.MAX_FOOD_RATE, r))
 end
 
 -- A fresh population starts mostly herbivorous but with a visible minority
@@ -229,7 +268,7 @@ function World:update(dt)
 
     self.foodTimer = self.foodTimer - dt
     if self.foodTimer <= 0 then
-        self.foodTimer = FOOD_SPAWN_INTERVAL
+        self.foodTimer = FOOD_SPAWN_INTERVAL / self.foodRate
         if #self.food < FOOD_CAP then
             self:spawnFood()
         end
@@ -237,7 +276,7 @@ function World:update(dt)
 
     self.foodSourceTimer = self.foodSourceTimer - dt
     if self.foodSourceTimer <= 0 then
-        self.foodSourceTimer = FOOD_SOURCE_SPAWN_INTERVAL
+        self.foodSourceTimer = FOOD_SOURCE_SPAWN_INTERVAL / self.foodRate
         if self:countFoodByTier("source") < FOOD_SOURCE_CAP then
             self:spawnFoodSource()
         end
@@ -245,7 +284,7 @@ function World:update(dt)
 
     self.megaFoodTimer = self.megaFoodTimer - dt
     if self.megaFoodTimer <= 0 then
-        self.megaFoodTimer = MEGA_FOOD_SPAWN_INTERVAL
+        self.megaFoodTimer = MEGA_FOOD_SPAWN_INTERVAL / self.foodRate
         if self:countFoodByTier("mega") < MEGA_FOOD_CAP then
             self:spawnMegaFoodSource()
         end

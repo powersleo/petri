@@ -23,9 +23,44 @@ Genome.TRAITS = {
     { key = "chlorophyll",      min = 0,    max = 1,    default = 0.1,  mutSigma = 0.1 },
     { key = "spikes",           min = 0,    max = 1,    default = 0.05, mutSigma = 0.08 },
 
+    -- Thermal resistance: the dish's temperature (world.temperature, player
+    -- adjustable) taxes upkeep for cells outside its comfort band -- these
+    -- blunt that tax one-sidedly, same upkeep-tradeoff shape as armor
+    -- blunting predation. No use paying for both at once, so a population
+    -- settled on one steady temperature should drift toward whichever
+    -- resistance actually matters and let the other lapse.
+    { key = "heat_resistance",  min = 0,    max = 1,    default = 0.05, mutSigma = 0.08 },
+    { key = "cold_resistance",  min = 0,    max = 1,    default = 0.05, mutSigma = 0.08 },
+
+    -- Strength: how much a cell resists getting swept along by the fluid
+    -- current (see cell.lua/main.lua's advection) -- doesn't help it swim
+    -- any faster under its own power, just anchors it against being pushed
+    -- around by water it isn't actively fighting.
+    { key = "strength",         min = 0,    max = 1,    default = 0.05, mutSigma = 0.08 },
+
     -- Predator traits: the offensive mirror of armor/toxicity above.
     { key = "bite_power",       min = 0,    max = 1,    default = 0.05, mutSigma = 0.08 },
     { key = "venom",            min = 0,    max = 1,    default = 0.05, mutSigma = 0.08 },
+
+    -- Herbivore traits: the foraging mirror of bite_power/venom above --
+    -- grazing_efficiency raises the energy squeezed out of each bite of
+    -- food, foraging_speed cuts the time spent chewing it, so a herbivore
+    -- specializing in these gets more out of the same food-rich patch than
+    -- one that doesn't, the same way a predator specializing in bite_power/
+    -- venom gets more out of the same catch.
+    { key = "grazing_efficiency", min = 0,  max = 1,    default = 0.05, mutSigma = 0.08 },
+    { key = "foraging_speed",   min = 0,    max = 1,    default = 0.05, mutSigma = 0.08 },
+
+    -- More herbivore defense: escape_burst is a reflexive sprint that only
+    -- kicks in while actively fleeing (distinct from the baseline speed
+    -- trait, which always applies); herd_defense spreads a spotted threat's
+    -- alarm to nearby herd-mates before they've noticed it themselves --
+    -- the defensive mirror of pack_hunting's group bonus. toxicity itself
+    -- also gained a second effect (see PREY_TOXICITY_PENALTY in cell.lua):
+    -- predators now shy away from conspicuously toxic prey up front, not
+    -- just get hurt after already committing.
+    { key = "escape_burst",     min = 0,    max = 1,    default = 0.05, mutSigma = 0.08 },
+    { key = "herd_defense",     min = 0,    max = 1,    default = 0.05, mutSigma = 0.08 },
 
     -- Behavioral traits: unlike the traits above, these carry no upkeep
     -- cost of their own -- they just shift decision thresholds, so their

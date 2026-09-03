@@ -34,6 +34,10 @@ local CHLOROPHYLL_UPKEEP = 0.15 -- energy/sec at chlorophyll=1, maintaining ligh
 local CHLOROPHYLL_EXPOSURE = 1.0 -- chlorophyll=1 cancels out this fraction of camouflage's stealth -- visible pigment is hard to hide
 local PREY_CHLOROPHYLL_BONUS = 0.5 -- a fully-chlorophyll candidate looks up to this much closer when a predator is picking a target
 local FOOD_ENERGY = 24
+local GRAZING_ENERGY_BONUS = 0.6 -- fraction more energy per bite at grazing_efficiency=1
+local GRAZING_UPKEEP = 0.4      -- energy/sec at grazing_efficiency=1, better digestion isn't free
+local FORAGING_SPEED_EAT_CUT = 0.6 -- fraction less chewing time at foraging_speed=1
+local FORAGING_SPEED_UPKEEP = 0.4  -- energy/sec at foraging_speed=1, a faster gut isn't free
 local PREDATION_EFFICIENCY = 0.95 -- fraction of prey's energy converted to attacker's energy
 local CONTACT_MARGIN = 2
 local BASE_CATCH_CHANCE = 0.65  -- per-second catch probability at parity
@@ -41,6 +45,19 @@ local CATCH_SPEED_WEIGHT = 0.5
 local CATCH_SIZE_WEIGHT = 0.5
 local CATCH_ARMOR_WEIGHT = 0.2  -- armor=1 subtracts this much catch probability
 local TOXIN_DAMAGE_MAX = 12     -- energy drained from an attacker that eats a fully-toxic prey
+-- Dish temperature (world.temperature, 0-100, player-adjustable): no cost
+-- to anyone inside the comfort band, but every degree past either edge
+-- taxes upkeep unless blunted by the matching resistance trait -- e.g. at
+-- heat_resistance=1 a scorching dish costs nothing extra; at 0 it costs the
+-- full rate.
+local TEMP_COMFORT_LOW = 35
+local TEMP_COMFORT_HIGH = 65
+local TEMP_STRESS_UPKEEP = 0.06 -- energy/sec per degree outside the comfort band, at zero resistance
+local HEAT_RESIST_UPKEEP = 0.5  -- energy/sec at heat_resistance=1, maintained whether or not it's ever needed
+local COLD_RESIST_UPKEEP = 0.5  -- energy/sec at cold_resistance=1, maintained whether or not it's ever needed
+local STRENGTH_UPKEEP = 0.45    -- energy/sec at strength=1, bracing against the current isn't free
+local STRENGTH_CURRENT_RESIST = 0.85 -- fraction of the fluid's push cancelled out at strength=1
+local VISCOSITY_SWIM_PENALTY = 0.5   -- fraction of swim speed lost at world.viscosity=1
 local SPIKES_UPKEEP = 0.8       -- energy/sec at spikes=1, growing and maintaining them isn't free
 local SPIKE_DAMAGE_PER_SEC = 7  -- energy/sec drained from an attacker grappling a fully-spiked prey, win or lose
 local BITE_POWER_UPKEEP = 0.7   -- energy/sec at bite_power=1, stronger jaws/mandibles aren't free
@@ -60,6 +77,13 @@ local KIN_CANNIBALISM_DESPERATION = 0.25 -- energy fraction below which a starvi
 local TRIBE_FOUNDING_CHANCE = 0.05 -- chance a newborn founds a new tribe instead of inheriting its parent's
 local PREY_PREDATOR_PENALTY = 1.7 -- a predator-ish candidate looks this much farther away when picking a target
 local PREY_SPIKE_PENALTY = 1.8  -- a fully-spiked candidate looks up to this much farther away on top of that
+-- Aposematic deterrence: a fully-toxic candidate looks up to this much
+-- farther away too, on top of the above -- predators learning to avoid
+-- conspicuous toxicity, not just get hurt after already committing to it.
+local PREY_TOXICITY_PENALTY = 1.4
+local ESCAPE_BURST_BONUS = 0.5  -- fraction faster while actively fleeing, at escape_burst=1
+local ESCAPE_BURST_UPKEEP = 0.35 -- energy/sec at escape_burst=1, keeping the reflex primed isn't free
+local HERD_DEFENSE_UPKEEP = 0.35 -- energy/sec at herd_defense=1, staying alert for others isn't free
 local CAMOUFLAGE_EFFECT = 0.6   -- camouflage=1 shrinks how close others must be to detect this cell by this fraction
 local LIFESPAN_VARIANCE = 0.3   -- +/- spread applied to genome.lifespan so old-age death isn't a hard deterministic wall
 local MAX_ENERGY_BASE = 45
@@ -164,10 +188,17 @@ end
 -- `speed` is genetic potential; `flagella` is what actually turns it into
 -- movement -- no flagella caps you at half your top speed. `chlorophyll`
 -- no longer costs speed; its downside is exposure (see isDetectable and
--- the prey-preference scoring in :update).
+-- the prey-preference scoring in :update). escape_burst only kicks in
+-- while actively fleeing -- a reflexive sprint, not a standing top speed --
+-- so it also raises a fleeing prey's effective speed as seen by whichever
+-- predator is chasing it (its catch-chance math reads this same method).
 function Cell:effectiveSpeed()
     local g = self.genome
-    return g.speed * (FLAGELLA_SPEED_FLOOR + (1 - FLAGELLA_SPEED_FLOOR) * g.flagella)
+    local spd = g.speed * (FLAGELLA_SPEED_FLOOR + (1 - FLAGELLA_SPEED_FLOOR) * g.flagella)
+    if self.state == "flee" then
+        spd = spd * (1 + g.escape_burst * ESCAPE_BURST_BONUS)
+    end
+    return spd
 end
 
 -- Generous click-hit radius: a circle that comfortably encloses the
@@ -256,6 +287,23 @@ function Cell:update(dt, world)
     if threat then
         self.dangerX, self.dangerY = threat.x, threat.y
         self.dangerTimer = DANGER_MEMORY_DURATION
+
+        -- Herd alarm: a spotted threat can also warn nearby herd-mates
+        -- before they've noticed it themselves -- the defensive mirror of
+        -- pack_hunting's group bonus. Radius scales with herd_defense, so
+        -- at 0 the alarm doesn't carry at all.
+        if g.herd_defense > 0 then
+            local alarmRadius = g.sense_radius * g.herd_defense
+            for _, other in ipairs(neighbors) do
+                if not other:isPredatorish() then
+                    local adx, ady = other.x - self.x, other.y - self.y
+                    if adx * adx + ady * ady <= alarmRadius * alarmRadius then
+                        other.dangerX, other.dangerY = threat.x, threat.y
+                        other.dangerTimer = DANGER_MEMORY_DURATION
+                    end
+                end
+            end
+        end
     end
 
     -- Predatorish cells lock onto one prey target and keep pursuing it
@@ -299,6 +347,7 @@ function Cell:update(dt, world)
                     local difficulty = 1
                     if other:isPredatorish() then difficulty = difficulty * PREY_PREDATOR_PENALTY end
                     difficulty = difficulty * (1 + other.genome.spikes * PREY_SPIKE_PENALTY)
+                    difficulty = difficulty * (1 + other.genome.toxicity * PREY_TOXICITY_PENALTY)
                     difficulty = difficulty * (1 - other.genome.chlorophyll * PREY_CHLOROPHYLL_BONUS)
                     local score = d * difficulty
                     if score < candidateScore then
@@ -330,7 +379,8 @@ function Cell:update(dt, world)
             -- chewing; only collect if it's still actually there.
             if self.eatingTarget and self.eatingTarget.remaining and self.eatingTarget.remaining > 0 then
                 world:consumeFood(self.eatingTarget)
-                self.energy = math.min(self.maxEnergy, self.energy + FOOD_ENERGY)
+                local energyGain = FOOD_ENERGY * (1 + g.grazing_efficiency * GRAZING_ENERGY_BONUS)
+                self.energy = math.min(self.maxEnergy, self.energy + energyGain)
             end
             self.eatingTarget = nil
         end
@@ -411,7 +461,7 @@ function Cell:update(dt, world)
         targetDx, targetDy = food.x - self.x, food.y - self.y
         local eatRange = g.size + food.radius
         if foodDist <= eatRange then
-            self.eatingTimer = EAT_DURATION
+            self.eatingTimer = EAT_DURATION * (1 - g.foraging_speed * FORAGING_SPEED_EAT_CUT)
             self.eatingTarget = food
             targetDx, targetDy = 0, 0
         end
@@ -491,7 +541,7 @@ function Cell:update(dt, world)
     if finalLen > 0.0001 then
         local nx, ny = finalX / finalLen, finalY / finalLen
         self.dir = math.atan2(ny, nx)
-        local dist = self:effectiveSpeed() * dt
+        local dist = self:effectiveSpeed() * (1 - world.viscosity * VISCOSITY_SWIM_PENALTY) * dt
         self.x = self.x + nx * dist
         self.y = self.y + ny * dist
     end
@@ -502,7 +552,23 @@ function Cell:update(dt, world)
     local upkeep = g.metabolism * (BASE_UPKEEP + SIZE_UPKEEP * g.size + SPEED_UPKEEP * speedRatio * speedRatio
         + ARMOR_UPKEEP * g.armor + TOXICITY_UPKEEP * g.toxicity + CAMOUFLAGE_UPKEEP * g.camouflage
         + FLAGELLA_UPKEEP * g.flagella + CHLOROPHYLL_UPKEEP * g.chlorophyll + SPIKES_UPKEEP * g.spikes
-        + BITE_POWER_UPKEEP * g.bite_power + VENOM_UPKEEP * g.venom)
+        + BITE_POWER_UPKEEP * g.bite_power + VENOM_UPKEEP * g.venom
+        + HEAT_RESIST_UPKEEP * g.heat_resistance + COLD_RESIST_UPKEEP * g.cold_resistance
+        + GRAZING_UPKEEP * g.grazing_efficiency + FORAGING_SPEED_UPKEEP * g.foraging_speed
+        + ESCAPE_BURST_UPKEEP * g.escape_burst + HERD_DEFENSE_UPKEEP * g.herd_defense
+        + STRENGTH_UPKEEP * g.strength)
+
+    -- Dish temperature is environmental stress, not internal upkeep, so
+    -- unlike the block above it isn't scaled by metabolism -- a fast or
+    -- slow metabolism doesn't change how exposed a cell is to the water
+    -- around it.
+    local temp = world.temperature or TEMP_COMFORT_LOW
+    if temp > TEMP_COMFORT_HIGH then
+        upkeep = upkeep + TEMP_STRESS_UPKEEP * (temp - TEMP_COMFORT_HIGH) * (1 - g.heat_resistance)
+    elseif temp < TEMP_COMFORT_LOW then
+        upkeep = upkeep + TEMP_STRESS_UPKEEP * (TEMP_COMFORT_LOW - temp) * (1 - g.cold_resistance)
+    end
+
     self.energy = self.energy - upkeep * dt
 
     -- Passive light-harvesting income, independent of foraging/hunting.
